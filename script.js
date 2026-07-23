@@ -1,15 +1,17 @@
 // ============================================
-// Exact Linux Terminal AI Engine (Gemini API)
+// Exact Linux Terminal AI Engine (Gemini API with Auto-Fallback)
 // ============================================
+
+const FALLBACK_MODELS = [
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-flash-latest",
+    "gemini-2.5-flash"
+];
 
 function getActiveApiKey() {
     if (typeof window !== 'undefined' && window.API_KEY) return window.API_KEY;
     return "";
-}
-
-function getApiEndpoint() {
-    const key = getActiveApiKey();
-    return `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`;
 }
 
 const jokeBtn = document.getElementById('jokeBtn');
@@ -43,38 +45,55 @@ const getJokePrompt = () => {
 
 async function fetchAIResponse(promptText, commandName = 'ai') {
     const loadingId = 'loading-' + Date.now();
-    appendLog(commandName, `<div id="${loadingId}" class="loading-text">🔄 Fetching response from Gemini 2.5 Flash...</div>`);
+    appendLog(commandName, `<div id="${loadingId}" class="loading-text">🔄 Fetching AI response...</div>`);
 
-    try {
-        const response = await fetch(getApiEndpoint(), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                contents: [{ parts: [{ text: promptText }] }]
-            })
-        });
+    const currentKey = getActiveApiKey();
 
+    if (!currentKey) {
         const loadingElem = document.getElementById(loadingId);
+        if (loadingElem) loadingElem.outerHTML = `<div class="error-text">❌ API Key missing. Please refresh (Ctrl + F5).</div>`;
+        return;
+    }
 
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            const msg = errData.error?.message || response.statusText;
-            if (loadingElem) loadingElem.outerHTML = `<div class="error-text">❌ API Error (${response.status}): ${escapeHtml(msg)}</div>`;
-            return;
+    let lastError = null;
+
+    for (const model of FALLBACK_MODELS) {
+        try {
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`;
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: [{ parts: [{ text: promptText }] }]
+                })
+            });
+
+            const data = await response.json();
+            const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+            if (response.ok && text) {
+                const loadingElem = document.getElementById(loadingId);
+                if (loadingElem) loadingElem.outerHTML = `<div class="response-text">${escapeHtml(text).replace(/\n/g, '<br>')}</div>`;
+                return;
+            }
+
+            if (data.error) {
+                lastError = data.error.message;
+                if (response.status === 429 || response.status === 404) {
+                    console.warn(`Model ${model} returned ${response.status}. Trying fallback...`);
+                    continue;
+                } else {
+                    throw new Error(data.error.message);
+                }
+            }
+        } catch (err) {
+            lastError = err.message;
         }
+    }
 
-        const data = await response.json();
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-        if (text) {
-            if (loadingElem) loadingElem.outerHTML = `<div class="response-text">${escapeHtml(text).replace(/\n/g, '<br>')}</div>`;
-        } else {
-            if (loadingElem) loadingElem.outerHTML = `<div class="error-text">⚠️ Empty response from API.</div>`;
-        }
-
-    } catch (err) {
-        const loadingElem = document.getElementById(loadingId);
-        if (loadingElem) loadingElem.outerHTML = `<div class="error-text">❌ Fetch Error: ${escapeHtml(err.message)}</div>`;
+    const loadingElem = document.getElementById(loadingId);
+    if (loadingElem) {
+        loadingElem.outerHTML = `<div class="error-text">❌ API Error: ${escapeHtml(lastError || 'Rate limit reached. Please retry in 10-20 seconds.')}</div>`;
     }
 }
 
